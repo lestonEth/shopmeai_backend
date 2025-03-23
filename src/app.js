@@ -43,7 +43,7 @@ const swaggerOptions = {
             },
         },
         servers: [
-            { url: "https://distinct-useful-lark.ngrok-free.app" }
+            { url: "https://shopmeai-backend.onrender.com" }
         ],
         components: {
             securitySchemes: {

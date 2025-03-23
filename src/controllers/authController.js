@@ -10,9 +10,11 @@ const register = async (req, res) => {
     try {
         const { username, email, password, role, parent_id, name, age, spendingLimit } = req.body;
 
-        // Check if the user already exists
+        // Check if the email already exists in either User or Child collections
         const existingUser = await User.findOne({ email });
-        if (existingUser) {
+        const existingChild = await Child.findOne({ email });
+
+        if (existingUser || existingChild) {
             return res.status(400).json({ message: 'Email already in use' });
         }
 
