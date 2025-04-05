@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authController = require("../controllers/authController"); // Ensure this path is correct
+const { verifyParent, verifyChild, verifyUser } = require('../middleware/authMiddleware');
 
 /**
  * @swagger
@@ -13,7 +14,7 @@ const authController = require("../controllers/authController"); // Ensure this 
  * @swagger
  * /api/auth/register:
  *   post:
- *     summary: Register a new user (Parent or Child)
+ *     summary: Register a new user (Parent)
  *     tags: [Authentication]
  *     requestBody:
  *       required: true
@@ -203,5 +204,50 @@ router.post("/reset-password", authController.resetPassword);
  *         description: Unauthorized
  */
 router.post("/logout", authController.logout);
+
+
+// 🔐 Create child - only accessible by logged-in parents
+/**
+ * @swagger
+ * /api/auth/create-child:
+ *   post:
+ *     summary: Create a child account (Only accessible by a parent)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - email
+ *               - password
+ *               - age
+ *               - spendingLimit
+ *             properties:
+ *               name:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *               password:
+ *                 type: string
+ *               age:
+ *                 type: number
+ *               spendingLimit:
+ *                 type: number
+ *     responses:
+ *       201:
+ *         description: Child created successfully
+ *       400:
+ *         description: Invalid input or email already exists
+ *       403:
+ *         description: Only parents can create children
+ *       500:
+ *         description: Server error
+ */
+router.post("/create-child", verifyUser, verifyParent, authController.createChild);
 
 module.exports = router;
