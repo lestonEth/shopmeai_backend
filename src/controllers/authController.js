@@ -5,80 +5,104 @@ const User = require('../models/User');
 const Child = require('../models/Child');
 const nodemailer = require('nodemailer');
 
-// Register a new user (Parent or Child)
+// Parent Registration Only
 const register = async (req, res) => {
     try {
-        const { username, email, password, role, parent_id, name, age, spendingLimit } = req.body;
+        const { username, email, password } = req.body;
 
-        // Check if the email already exists in either User or Child collections
         const existingUser = await User.findOne({ email });
-        const existingChild = await Child.findOne({ email });
-
-        if (existingUser || existingChild) {
+        if (existingUser) {
             return res.status(400).json({ message: 'Email already in use' });
         }
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        if (role === 'parent') {
-            const newUser = new User({
-                username,
-                email,
-                password_hash: hashedPassword,
-                role,
-            });
+        const newUser = new User({
+            username,
+            email,
+            password_hash: hashedPassword,
+            role: 'parent',
+        });
 
-            await newUser.save();
-            res.status(201).json({ message: 'Parent registered successfully', user: { username, email, role } });
-        } else if (role === 'child') {
-            const newChild = new Child({
-                name,
-                email,
-                password: hashedPassword,
-                age,
-                parent_id,
-                spendingLimit,
-                balance: 0.0,
-                active: true,
-                avatar: name.charAt(0)
-            });
-
-            await newChild.save();
-            res.status(201).json({ message: 'Child registered successfully', child: { name, email, role } });
-        } else {
-            return res.status(400).json({ message: 'Invalid role' });
-        }
+        await newUser.save();
+        res.status(201).json({ message: 'Parent registered successfully', user: { username, email, role: 'parent' } });
     } catch (error) {
-        res.status(500).json({ message: 'Error registering user', error: error.message });
+        res.status(500).json({ message: 'Error registering parent', error: error.message });
     }
 };
 
-// Login User (Parent or Child)
+// Only parent can create a child
+const createChild = async (req, res) => {
+    try {
+        const { _id } = req.user; // Assume middleware decoded token
+        const { name, email, password, age, spendingLimit } = req.body;
+
+        console.log("Child registration request", req.body);
+
+        const parent = await User.findById(_id);
+        if (!parent || parent.role !== 'parent') {
+            return res.status(403).json({ message: 'Only parents can create child accounts' });
+        }
+
+        const existingChild = await Child.findOne({ email });
+        if (existingChild) {
+            return res.status(400).json({ message: 'Child with this email already exists' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const newChild = new Child({
+            name,
+            email,
+            password: hashedPassword,
+            age,
+            parent_id: parent._id,
+            spendingLimit,
+            balance: 0.0,
+            active: true,
+            avatar: name.charAt(0)
+        });
+
+
+        await newChild.save();
+
+        res.status(201).json({ message: 'Child account created successfully', child: newChild });
+    } catch (error) {
+        res.status(500).json({ message: 'Error creating child account', error: error.message });
+    }
+};
+
+// Login for both parent and child
 const login = async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Check if the user is a parent
         let user = await User.findOne({ email });
+        let isParent = true;
 
         if (!user) {
-            // If not a parent, check if the user is a child
             user = await Child.findOne({ email });
+            isParent = false;
             if (!user) {
                 return res.status(400).json({ message: 'Invalid email or password' });
             }
         }
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
 
-        const isMatch = await bcrypt.compare(password, user.password_hash || user.password);
+        const isMatch = await bcrypt.compare(password, isParent ? user.password_hash : hashedPassword);
 
         if (!isMatch) {
             return res.status(400).json({ message: 'Invalid email or password' });
         }
 
-        const token = jwt.sign({ user_id: user._id, role: user.role || 'child' }, process.env.JWT_SECRET, {
-            expiresIn: '7d',
-        });
+        const token = jwt.sign(
+            { user_id: user._id, role: isParent ? user.role : 'child', parent_id: isParent ? user._id : user.parent_id },
+            process.env.JWT_SECRET,
+            { expiresIn: '7d' }
+        );
 
         res.json({
             message: 'Login successful',
@@ -87,7 +111,8 @@ const login = async (req, res) => {
                 id: user._id,
                 username: user.username || user.name,
                 email: user.email,
-                role: user.role || 'child'
+                role: isParent ? user.role : 'child',
+                parent_id: isParent ? null : user.parent_id
             }
         });
     } catch (error) {
@@ -95,22 +120,18 @@ const login = async (req, res) => {
     }
 };
 
-// Forgot Password - Send Reset Email
 const forgotPassword = async (req, res) => {
     try {
         const { email } = req.body;
 
-        let user = await User.findOne({ email });
+        let user = await User.findOne({ email }) || await Child.findOne({ email });
         if (!user) {
-            user = await Child.findOne({ email });
-            if (!user) {
-                return res.status(400).json({ message: 'User with this email does not exist' });
-            }
+            return res.status(400).json({ message: 'User with this email does not exist' });
         }
 
         const resetToken = crypto.randomBytes(32).toString('hex');
         user.resetPasswordToken = resetToken;
-        user.resetPasswordExpires = Date.now() + 3600000; // 1 hour expiration
+        user.resetPasswordExpires = Date.now() + 3600000;
 
         await user.save();
 
@@ -122,45 +143,41 @@ const forgotPassword = async (req, res) => {
             }
         });
 
-        const resetLink = `${process.env.CLIENT_URL}/reset-password/${resetToken}`;
-
-        const mailOptions = {
+        const resetLink = `${ process.env.CLIENT_URL }/reset-password/${ resetToken }`;
+        await transporter.sendMail({
             from: process.env.EMAIL_USER,
             to: user.email,
             subject: 'Password Reset Request',
-            text: `Click the link to reset your password: ${resetLink}`,
-        };
-
-        await transporter.sendMail(mailOptions);
+            text: `Click the link to reset your password: ${ resetLink }`
+        });
 
         res.json({ message: 'Password reset link sent to email' });
     } catch (error) {
-        res.status(500).json({ message: 'Error sending password reset email', error: error.message });
+        res.status(500).json({ message: 'Error sending reset email', error: error.message });
     }
 };
 
-// Reset Password
 const resetPassword = async (req, res) => {
     try {
         const { token, newPassword } = req.body;
 
         let user = await User.findOne({
             resetPasswordToken: token,
-            resetPasswordExpires: { $gt: Date.now() }, // Token must not be expired
+            resetPasswordExpires: { $gt: Date.now() }
+        }) || await Child.findOne({
+            resetPasswordToken: token,
+            resetPasswordExpires: { $gt: Date.now() }
         });
 
-        if (!user) {
-            user = await Child.findOne({
-                resetPasswordToken: token,
-                resetPasswordExpires: { $gt: Date.now() },
-            });
-            if (!user) {
-                return res.status(400).json({ message: 'Invalid or expired token' });
-            }
-        }
+        if (!user) return res.status(400).json({ message: 'Invalid or expired token' });
 
         const salt = await bcrypt.genSalt(10);
-        user.password_hash = await bcrypt.hash(newPassword, salt);
+        if (user.role === 'parent' || user.username) {
+            user.password_hash = await bcrypt.hash(newPassword, salt);
+        } else {
+            user.password = await bcrypt.hash(newPassword, salt);
+        }
+
         user.resetPasswordToken = null;
         user.resetPasswordExpires = null;
 
@@ -172,9 +189,8 @@ const resetPassword = async (req, res) => {
     }
 };
 
-// Logout (Client-side should handle token removal)
-const logout = async (req, res) => {
+const logout = (req, res) => {
     res.json({ message: 'Logout successful' });
 };
 
-module.exports = { register, login, logout, forgotPassword, resetPassword };
+module.exports = { register, login, logout, forgotPassword, resetPassword, createChild };
